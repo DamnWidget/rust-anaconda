@@ -1,0 +1,19 @@
+[package]
+name = "rustfmtanaconda"
+version = "0.1.0"
+authors = ["Oscar Campos <damnwidget@gmail.com>"]
+description = "A fancy name for a simple wrapper around rustfmt for anaconda_rust ST3 package"
+repository = "https://github.com/DamnWidget/rustfmt-anaconda"
+readme = "README.md"
+license = "Apache-2.0"
+include = ["src/*.rs", "Cargo.toml"]
+
+[dependencies]
+libc = "0.2.14"
+getopts = "0.2"
+rustfmt = "*"
+
+
+[lib]
+crate-type = ["dylib", "rlib"]
+
