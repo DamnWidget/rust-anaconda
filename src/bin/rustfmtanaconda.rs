@@ -19,10 +19,14 @@ use std::{env};
 use std::io::{self, Read};
 
 fn main() {
+    let mut config_path: Option<String> = None;
     let args: Vec<String> = env::args().skip(1).collect();
+    if args.len() > 0 {
+        config_path = env::args().nth(1)
+    }
 
     let mut buffer = String::new();
     io::stdin().read_to_string(&mut buffer).unwrap();
 
-    std::process::exit(rustfmtanaconda::execute(args, buffer));
+    std::process::exit(rustfmtanaconda::execute(buffer, config_path));
 }

@@ -20,22 +20,26 @@ use libc::{c_char, c_uchar, c_int};
 use rustfmt::{Input, Summary, run};
 use rustfmt::config::{Config, WriteMode};
 
-use std::{env, error};
+use std::{env, error, mem};
 use std::fs::{self, File};
 use std::io::{ErrorKind, Read, Write};
 use std::ffi::{CString, CStr};
 use std::path::{Path, PathBuf};
 
-use getopts::{Options};
-
 type FmtError = Box<error::Error + Send + Sync>;
 type FmtResult<T> = std::result::Result<T, FmtError>;
 
-fn c_str_to_safe_string(c_str: *const libc::c_char) -> String {
-    unsafe {
-        assert!(!c_str.is_null());
-        CStr::from_ptr(c_str).to_string_lossy().into_owned()
+fn match_cli_path_or_file(config_path: Option<PathBuf>,
+                          input_file: &Path)
+                          -> FmtResult<(Config, Option<PathBuf>)> {
+
+    if let Some(config_file) = config_path {
+        let (toml, path) = try!(resolve_config(config_file.as_ref()));
+        if path.is_some() {
+            return Ok((toml, path));
+        }
     }
+    resolve_config(input_file)
 }
 
 fn resolve_config(dir: &Path) -> FmtResult<(Config, Option<PathBuf>)> {
@@ -82,32 +86,8 @@ fn lookup_project_file(dir: &Path) -> FmtResult<Option<PathBuf>> {
     }
 }
 
-pub fn make_opts() -> Options {
-    let mut opts = Options::new();
-    opts.optopt("",
-                 "config-path",
-                 "Recursively searches the given path for the rustfmt.toml config file. If not \
-                  found reverts to the input file path",
-                 "[Path for the configuration file}");
-    opts.optflag("", "skip-children", "don't reformat child modules");
-    opts
-}
-
-pub fn execute(args: Vec<String>, buffer: String) -> i32 {
-    let opts: Options = make_opts();
-
-    let matches = match opts.parse(args) {
-        Ok(m) => m,
-        Err(e) => {
-            usage(&opts, &e.to_string());
-            return -1;
-        }
-    };
-
-    // get common options from matches
-    let skip_children = matches.opt_present("skip-children");
-    println!("skip_children: {}", skip_children);
-    let config_path: Option<PathBuf> = matches.opt_str("config-path")
+pub fn execute(buffer: String, cfg_path: Option<String>) -> i32 {
+    let config_path: Option<PathBuf> = cfg_path
         .map(PathBuf::from)
         .and_then(|dir| {
             if dir.is_file() {
@@ -116,22 +96,11 @@ pub fn execute(args: Vec<String>, buffer: String) -> i32 {
             Some(dir)
         });
 
-    let mut config = Config::default();
-    let mut path = None;
-    // Load the config filee path if provided
-    if let Some(config_file) = config_path {
-        let (cfg_tmp, path_tmp) = resolve_config(config_file.as_ref())
-            .expect(&format!("Error resolving config for {:?}", config_file));
-        config = cfg_tmp;
-        path = path_tmp;
-    };
-    if let Some(path) = path.as_ref() {
-        println!("Using rustfmt config file {}", path.display());
-    }
+    // try to read config from local directory
+    let (mut config, _) = match_cli_path_or_file(config_path, &env::current_dir().unwrap())
+        .expect("Error resolving config");
 
-    config.skip_children = skip_children;
-    config.verbose = false;
-    // write mode is always Plain for anaconda_rust buffer mode
+    // write_mode is alwais Plain for anaconda_rust
     config.write_mode = WriteMode::Plain;
 
     // run the command and return status code
@@ -141,7 +110,7 @@ pub fn execute(args: Vec<String>, buffer: String) -> i32 {
 fn process_summary(error_summary: Summary) -> i32 {
     let status_code: i32;
     if error_summary.has_operational_errors() {
-        status_code =1
+        status_code = 1
     } else if error_summary.has_parsing_errors() {
         status_code = 2
     } else if error_summary.has_formatting_errors() {
@@ -157,17 +126,20 @@ fn process_summary(error_summary: Summary) -> i32 {
     status_code
 }
 
-fn usage(opts: &Options, reason: &str) {
-    let reason = format!("{}\nusage: {} [options] <file>...",
-                         reason,
-                         env::args_os().next().unwrap().to_string_lossy());
-    println!("{}", opts.usage(&reason));
+// FFI related
+fn c_str_to_safe_string(c_str: *const libc::c_char) -> String {
+    unsafe {
+        assert!(!c_str.is_null());
+        CStr::from_ptr(c_str).to_string_lossy().into_owned()
+    }
 }
 
 #[no_mangle]
 pub extern fn get_version() -> *const c_char {
     let s = CString::new(option_env!("CARGO_PKG_VERSION").unwrap_or("unknown")).unwrap();
-    s.as_ptr()
+    let p = s.as_ptr();
+    mem::forget(s);
+    p as *const _
 }
 
 #[no_mangle]
