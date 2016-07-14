@@ -15,7 +15,7 @@ extern crate libc;
 extern crate rustfmt;
 extern crate getopts;
 
-use libc::{c_char, c_uchar, c_int};
+use libc::{c_char, c_int};
 
 use rustfmt::{Input, Summary, run};
 use rustfmt::config::{Config, WriteMode};
@@ -127,6 +127,11 @@ fn process_summary(error_summary: Summary) -> i32 {
 }
 
 // FFI related
+
+/// This function converts a C char * string into a safe Rust String
+/// It assures that the c_str is not null using assert! macro so you
+/// must be certain that yo never pass null strings to any of the
+/// exported functions
 fn c_str_to_safe_string(c_str: *const libc::c_char) -> String {
     unsafe {
         assert!(!c_str.is_null());
@@ -134,6 +139,14 @@ fn c_str_to_safe_string(c_str: *const libc::c_char) -> String {
     }
 }
 
+/// Converts a Rust String into a C char * and returns a pointer
+/// to it's inner memory
+///
+/// WARNING: this function forgets about the allocated memory so
+/// YOU MUST MAKE SURE to delete this memory yourself, there is
+/// a convenience exported function to do that, you can just
+/// call `free_c_char_mem` with the C string as parameter to
+/// free the allocated memory from your C compatible code
 fn to_c_str(s: String) -> *mut c_char {
     let s = CString::new(s).unwrap();
     let p = s.as_ptr();
@@ -141,11 +154,18 @@ fn to_c_str(s: String) -> *mut c_char {
     p as *mut _
 }
 
+/// Return this crate version as a C string
+///
+/// NOTE: You should free the allocated string memory after is not need anymore
 #[no_mangle]
 pub extern fn get_version() -> *mut c_char {
     to_c_str(String::from(option_env!("CARGO_PKG_VERSION").unwrap_or("unknown")))
 }
 
+/// This function can be used to free memory allocated by Rust
+///
+/// You can also free the memory in your C compatible app calling
+/// the stdlib free function for example
 #[no_mangle]
 pub extern fn free_c_char_mem(c: *mut c_char) {
     unsafe {
@@ -159,12 +179,15 @@ pub extern fn free_c_char_mem(c: *mut c_char) {
     }
 }
 
+/// Format the passed buffer using librustfmt and return back an operation
+/// status code, librustfmt uses the standard output to print the formating
+/// results so you should capture it in you C level code.
+///
+/// No memory need to be freed after use this function as it is automatically
+/// handled by Rust itself
 #[no_mangle]
-pub extern fn format(code: *const c_char, path: *const c_char) ->  c_uchar {
-    let rcode = c_str_to_safe_string(code);
-    let rpath = c_str_to_safe_string(path);
-
-    println!("{}", rcode);
-    println!("{}", rpath);
-    1
+pub extern fn format(code: *const c_char, path: *const c_char) ->  c_int {
+    let config_path: Option<String> = Some(c_str_to_safe_string(path));
+    let buffer = c_str_to_safe_string(code);
+    execute(buffer, config_path)
 }
