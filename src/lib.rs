@@ -134,12 +134,29 @@ fn c_str_to_safe_string(c_str: *const libc::c_char) -> String {
     }
 }
 
-#[no_mangle]
-pub extern fn get_version() -> *const c_char {
-    let s = CString::new(option_env!("CARGO_PKG_VERSION").unwrap_or("unknown")).unwrap();
+fn to_c_str(s: String) -> *mut c_char {
+    let s = CString::new(s).unwrap();
     let p = s.as_ptr();
     mem::forget(s);
-    p as *const _
+    p as *mut _
+}
+
+#[no_mangle]
+pub extern fn get_version() -> *mut c_char {
+    to_c_str(String::from(option_env!("CARGO_PKG_VERSION").unwrap_or("unknown")))
+}
+
+#[no_mangle]
+pub extern fn free_c_char_mem(c: *mut c_char) {
+    unsafe {
+        if c.is_null() {
+            return;
+        }
+
+        let c_str: &CStr = CStr::from_ptr(c);
+        let bytes_len: usize = c_str.to_bytes_with_nul().len();
+        let _: Vec<c_char> = Vec::from_raw_parts(c, bytes_len, bytes_len);
+    }
 }
 
 #[no_mangle]
