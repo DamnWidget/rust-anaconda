@@ -1,4 +1,4 @@
-# RustFMT Anaconda
+# RustAnaconda
 A fancy name for a simple wrapper.
 
 ## What is this?
