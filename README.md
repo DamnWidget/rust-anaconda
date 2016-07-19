@@ -4,15 +4,16 @@ A fancy name for a simple wrapper.
 ## What is this?
 This is just a Rust crate that creates a dynamic C compatible shared lib that allows
 [AnacondaRUST](https://github.com/DamnWidget/anaconda_rust) to call rustfmt directly from it's Python JsonServer code using
-[cFFI](https://pypi.python.org/pypi/cffi) instead of using subprocesses.
+[cFFI](https://pypi.python.org/pypi/cffi) or `ctypes` instead of using subprocesses.
 
-This is also a real world example of how to use CFFI to call Rust code from Python code.
+This is also a real world example of how to use CFFI/ctypes to call Rust code from Python code.
 
 ## Are you serious?
 Yep
 
 ## License
 
+```
 Copyright 2016 Oscar Campos <damnwidget@gmail.com>
 
    Licensed under the Apache License, Version 2.0 (the "License");
@@ -26,4 +27,4 @@ Copyright 2016 Oscar Campos <damnwidget@gmail.com>
    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
    See the License for the specific language governing permissions and
    limitations under the License.
-
+```

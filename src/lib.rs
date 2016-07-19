@@ -12,20 +12,26 @@
 // limitations under the License.
 
 extern crate libc;
+extern crate racer;
 extern crate rustfmt;
-extern crate getopts;
 
-use libc::{c_char, c_int};
+use libc::{c_char, c_int, uint32_t};
 
 use rustfmt::{Input, Summary, run};
 use rustfmt::config::{Config, WriteMode};
 
-use std::{env, error, mem};
+use racer::core;
+use racer::core::Match;
+use racer::scopes;
+
+use std::{env, error};
 use std::fs::{self, File};
 use std::io::{ErrorKind, Read, Write};
 use std::ffi::{CString, CStr};
 use std::path::{Path, PathBuf};
+use std::thread;
 
+// rustfmt related
 type FmtError = Box<error::Error + Send + Sync>;
 type FmtResult<T> = std::result::Result<T, FmtError>;
 
@@ -86,7 +92,7 @@ fn lookup_project_file(dir: &Path) -> FmtResult<Option<PathBuf>> {
     }
 }
 
-pub fn execute(buffer: String, cfg_path: Option<String>) -> i32 {
+pub fn rustfmt(buffer: String, cfg_path: Option<String>) -> i32 {
     let config_path: Option<PathBuf> = cfg_path
         .map(PathBuf::from)
         .and_then(|dir| {
@@ -126,6 +132,117 @@ fn process_summary(error_summary: Summary) -> i32 {
     status_code
 }
 
+// racer related
+fn racer_complete(code: String, path_str: String, line: usize, offset: usize) -> String {
+    // We can not allow rust from panicking or the Python
+    // process spawned by ST3 will die and die is sad.
+    //
+    // To prevent it we fire the call to the underlying
+    // libracer wrapped into a thread so we can catch
+    // any panic and response with an error
+    let child = thread::spawn(move || {
+        let mut output = String::new();
+        let cache = core::FileCache::new();
+        let path_buf = PathBuf::from(path_str);
+        let path = path_buf.as_path();
+        let session = core::Session::from_path(&cache, path, path);
+
+        // cache the contents of the given file path and code
+        cache.cache_file_contents(path, code);
+
+        let src = session.load_file(path);
+        let point = scopes::coords_to_point(&src, line, offset);
+
+        for m in core::complete_from_file(&src, path, point, &session) {
+            output = format!("{}\n{}", output, match_fn(m, &session));
+        }
+        output
+
+    });
+    match child.join() {
+        Ok(v) => format!("{}", v),
+        Err(e) => format!("error\tRacer Panicked: {:?}", e)
+    }
+}
+
+fn find_definition(code: String, path_str: String, line: usize, offset: usize) -> String {
+    let child = thread::spawn(move || {
+        let path_buf = PathBuf::from(path_str);
+        let path = path_buf.as_path();
+        let cache = core::FileCache::new();
+        let session = core::Session::from_path(&cache, path, path);
+
+        // cache the contents of the given file path and code
+        cache.cache_file_contents(path, code);
+
+        let src = session.load_file(path);
+        let pos = scopes::coords_to_point(&src, line, offset);
+
+        match core::find_definition(&src, path, pos, &session) {
+            Some(m) => match_definition(m, &session),
+            None => String::new(),
+        }
+    });
+    match child.join() {
+        Ok(v) => format!("{}", v),
+        Err(e) => format!("error\tRacer Panicked: {:?}", e)
+    }
+}
+
+fn get_documentation(code: String, path_str: String, line: usize, offset: usize) -> String {
+    let child = thread::spawn(move || {
+        let cache = core::FileCache::new();
+        let path_buf = PathBuf::from(path_str);
+        let path = path_buf.as_path();
+        let session = core::Session::from_path(&cache, path, path);
+
+        // cache the contents of the given file path and code
+        cache.cache_file_contents(path, code);
+
+        let src = session.load_file(path);
+        let point = scopes::coords_to_point(&src, line, offset);
+
+        let mut matches = core::complete_from_file(&src, path, point, &session);
+        match_doc_fn(matches.next().unwrap())
+    });
+    match child.join() {
+        Ok(v) => format!("{}", v),
+        Err(e) => format!("error\tRacer Panicked: {:?}", e)
+    }
+}
+
+fn match_fn(m: Match, session: &core::Session) -> String {
+    if m.matchstr == "" {
+        String::from("MATCHSTR is empty - waddup?");
+    }
+
+    let snippet = racer::snippets::snippet_for_match(&m, session);
+    format!("{}\t{}\t{}\t{:?}\t{}",
+            m.matchstr,
+            snippet,
+            m.filepath.to_str().unwrap(),
+            m.mtype,
+            m.contextstr.replace("\t", "\\t"),
+    )
+}
+
+fn match_definition(m: Match, session: &core::Session) -> String {
+    let (linenum, offset) = scopes::point_to_coords_from_file(&m.filepath, m.point, session).unwrap();
+    if m.matchstr == "" {
+        String::from("MATCHSTR is empty - waddup?");
+    }
+
+    format!("{}\t{}\t{}", m.filepath.to_str().unwrap(), linenum.to_string(), offset.to_string())
+}
+
+fn match_doc_fn(m: Match) -> String {
+    if m.matchstr == "" {
+        String::from("MATCHSTR is mepty - waddup?");
+    }
+
+    format!("{:?}", m.docs)
+}
+
 // FFI related
 
 /// This function converts a C char * string into a safe Rust String
@@ -148,10 +265,8 @@ fn c_str_to_safe_string(c_str: *const libc::c_char) -> String {
 /// call `free_c_char_mem` with the C string as parameter to
 /// free the allocated memory from your C compatible code
 fn to_c_str(s: String) -> *mut c_char {
-    let s = CString::new(s).unwrap();
-    let p = s.as_ptr();
-    mem::forget(s);
-    p as *mut _
+    let c_string = CString::new(s).unwrap();
+    c_string.into_raw()
 }
 
 /// Return this crate version as a C string
@@ -169,14 +284,9 @@ pub extern fn get_version() -> *mut c_char {
 #[no_mangle]
 pub extern fn free_c_char_mem(c: *mut c_char) {
     unsafe {
-        if c.is_null() {
-            return;
-        }
-
-        let c_str: &CStr = CStr::from_ptr(c);
-        let bytes_len: usize = c_str.to_bytes_with_nul().len();
-        let _: Vec<c_char> = Vec::from_raw_parts(c, bytes_len, bytes_len);
-    }
+        if c.is_null() { return }
+        CString::from_raw(c)
+    };
 }
 
 /// Format the passed buffer using librustfmt and return back an operation
@@ -189,5 +299,36 @@ pub extern fn free_c_char_mem(c: *mut c_char) {
 pub extern fn format(code: *const c_char, path: *const c_char) ->  c_int {
     let config_path: Option<String> = Some(c_str_to_safe_string(path));
     let buffer = c_str_to_safe_string(code);
-    execute(buffer, config_path)
+    rustfmt(buffer, config_path)
 }
+
+/// Look for code completions using libracer and return back a string with
+/// a result per line with fields separated by tabs (\t)
+///
+/// WARNING: this function forgets about the allocated memory so
+/// YOU MUST MAKE SURE to delete this memory yourself.
+#[no_mangle]
+pub extern fn complete(code: *const c_char, path: *const c_char, line: uint32_t, col: uint32_t) -> *mut c_char {
+    to_c_str(racer_complete(c_str_to_safe_string(code), c_str_to_safe_string(path), line as usize, col as usize))
+}
+
+/// Look for definitions of the word under the cursor using libracer and
+/// return a string with a result per line with fields separated by tabs
+///
+/// WARNING: this function forgets about the allocated memory so
+/// YOU MUST MAKE SURE to delete this memory yourself
+#[no_mangle]
+pub extern fn definitions(code: *const c_char, path: *const c_char, line: uint32_t, col: uint32_t) -> *mut c_char {
+    to_c_str(find_definition(c_str_to_safe_string(code), c_str_to_safe_string(path), line as usize, col as usize))
+}
+
+/// Look for documentation about the word under the cursor using libracer
+/// and return a string with a result per line with fields separated by tabs
+///
+/// WARNING: this function forgets about the allocated memory so
+/// YOU MUST MAKE SURE to delete this memory yourself.
+#[no_mangle]
+pub extern fn documentation(code: *const c_char, path: *const c_char, line: uint32_t, col: uint32_t) -> *mut c_char {
+    to_c_str(get_documentation(c_str_to_safe_string(code), c_str_to_safe_string(path), line as usize, col as usize))
+}
+
